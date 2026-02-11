@@ -3,13 +3,36 @@ from PyLibreHardwareMonitor import Computer
 import time
 import struct
 import traceback
+import wmi
+import os
 
 VENDOR_ID = 0x381C 
 PRODUCT_ID = 0x0003
 
-# Threshold for "Impossible" speeds (e.g., 8GHz)
-MAX_LOGICAL_MHZ = 8000 
+# Smoothing factor (0.1 = very smooth/slow, 0.9 = very reactive/fast)
+ALPHA = 0.6 
+smoothed_fastest_freq = 0
+
+
+def get_cpu_fastest_core():
+    c = wmi.WMI()
     
+    # Get Base Speed (static)
+    proc = c.Win32_Processor()[0]
+    base_mhz = proc.MaxClockSpeed 
+    
+    # Get Per-Core Performance % and Load %
+    # covers all logical cores + Total
+    perf_data = c.Win32_PerfFormattedData_PerfOS_Processor()    
+    core_freqs = []   
+    for core in perf_data:
+        if core.Name != "_Total":
+            # Processor time in non-idle threads
+            perf_pct = float(core.PercentProcessorTime)         
+            core_freqs.append(base_mhz * (perf_pct / 100))
+    
+    return max(core_freqs)
+
 def run_utility():
     device = None
     print("Initializing LibreHardwareMonitor...")
@@ -30,8 +53,7 @@ def run_utility():
         print("Monitoring CPU... (Press Ctrl+C to stop)")
 
         while True:
-            cpu_dict = computer.cpu
-            
+            cpu_dict = computer.cpu           
             if not cpu_dict:
                 time.sleep(1)
                 continue
@@ -43,19 +65,9 @@ def run_utility():
             temp = data_map.get('Temperature', {}).get('Core (Tctl/Tdie)', 0)
             usage = data_map.get('Load', {}).get('CPU Total', 0)
             power_w = data_map.get('Power', {}).get('Package', 0)
-            # Get all Clock sensors
-            clocks = data_map.get('Clock', {})
-            # We look for keys containing "Core #" and ensure the value is realistic
-            core_frequencies = [
-                val for key, val in clocks.items() 
-                if "Core #" in key and 0 < val < MAX_LOGICAL_MHZ
-            ]
-            if not core_frequencies:
-                time.sleep(1)
-                continue
-                
-            # Get the peak performance core
-            freq = max(core_frequencies)
+ 
+            # Get the peak performance core from WMI, otherwise we need millisecond polling MSR
+            freq = get_cpu_fastest_core()
 
             # --- Packet Construction ---
             data = [0] * 64
