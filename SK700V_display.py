@@ -7,7 +7,8 @@ import traceback
 VENDOR_ID = 0x381C 
 PRODUCT_ID = 0x0003
 
-
+# Threshold for "Impossible" speeds (e.g., 8GHz)
+MAX_LOGICAL_MHZ = 8000 
     
 def run_utility():
     device = None
@@ -42,13 +43,25 @@ def run_utility():
             temp = data_map.get('Temperature', {}).get('Core (Tctl/Tdie)', 0)
             usage = data_map.get('Load', {}).get('CPU Total', 0)
             power_w = data_map.get('Power', {}).get('Package', 0)
-            freq = data_map.get('Clock', {}).get('Core #1', 0)
+            # Get all Clock sensors
+            clocks = data_map.get('Clock', {})
+            # We look for keys containing "Core #" and ensure the value is realistic
+            core_frequencies = [
+                val for key, val in clocks.items() 
+                if "Core #" in key and 0 < val < MAX_LOGICAL_MHZ
+            ]
+            if not core_frequencies:
+                time.sleep(1)
+                continue
+                
+            # Get the peak performance core
+            freq = max(core_frequencies)
 
             # --- Packet Construction ---
             data = [0] * 64
             data[0:7] = [16, 104, 1, 4, 13, 1, 2]
             
-#Some scaling happens with byte 7
+            #Some scaling happens with byte 7
             data[7] = 0
             p_bytes = int(power_w).to_bytes(2, 'little')
             data[8], data[9] = p_bytes[0], p_bytes[1]
@@ -74,7 +87,7 @@ def run_utility():
             except:
                 device.write([0x00] + data)
 
-            print(f"Temp: {temp:.1f}°C | Load: {usage:.1f}% | Power: {power_w:.1f}W", end='\r')
+            print(f"Freq: {freq:.1f}MHz | Temp: {temp:.1f}°C | Load: {usage:.1f}% | Power: {power_w:.1f}W ", end='\r')
             time.sleep(1)
 
     except KeyboardInterrupt:
