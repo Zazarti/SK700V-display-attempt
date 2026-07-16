@@ -13,7 +13,8 @@ DEFAULT_CONFIG = {
     "PRODUCT_ID": 0x0003,
     "ALPHA": 0.6,
     "POLL_RATE": 1.0,
-    "RETRY_INTERVAL": 5.0
+    "RETRY_INTERVAL": 5.0,
+    "VERBOSE": True
 }
 
 def load_config():
@@ -22,7 +23,10 @@ def load_config():
     and rigorously validates the resulting parameters.
     """
     config = DEFAULT_CONFIG.copy()
-    config_path = "config.json"
+    
+    # Resolve config path relative to the script location
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, "config.json")
     
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
@@ -32,10 +36,17 @@ def load_config():
         if not isinstance(user_config, dict):
             raise ValueError("Configuration root must be a JSON object.")
         
+        # Fail fast on unknown configuration keys to surface typos/misconfigurations
+        unknown_keys = set(user_config.keys()) - set(DEFAULT_CONFIG.keys())
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown configuration key(s) in {config_path}: "
+                + ", ".join(sorted(unknown_keys))
+            )
+            
         # Merge defaults with user_config
         for k, v in user_config.items():
-            if k in config:
-                config[k] = v
+            config[k] = v
                 
         # Strict validation checks on the merged configuration
         if not (isinstance(config["VENDOR_ID"], int) and 0 <= config["VENDOR_ID"] <= 0xFFFF):
@@ -50,8 +61,11 @@ def load_config():
         if not (isinstance(config["RETRY_INTERVAL"], (int, float)) and config["RETRY_INTERVAL"] > 0 and math.isfinite(config["RETRY_INTERVAL"])):
             raise ValueError("RETRY_INTERVAL must be a finite positive number.")
             
-        if not (isinstance(config["ALPHA"], (int, float)) and 0 < config["ALPHA"] <= 1.0):
+        if not (isinstance(config["ALPHA"], (int, float)) and math.isfinite(config["ALPHA"]) and 0 < config["ALPHA"] <= 1.0):
             raise ValueError("ALPHA must be a finite number within the range (0, 1].")
+            
+        if not isinstance(config["VERBOSE"], bool):
+            raise ValueError("VERBOSE must be a boolean (true or false).")
     else:
         # Generate the default configuration file if it doesn't exist
         with open(config_path, "w") as f:
@@ -157,7 +171,9 @@ def run_utility():
                     # Attempt zero-padded write on specific HID implementations
                     device.write([0x00] + data)
 
-                print(f"Freq: {smoothed_freq:.1f}MHz | Temp: {temp:.1f}°C | Load: {usage:.1f}% | Power: {power_w:.1f}W ", end='\r')
+                if config["VERBOSE"]:
+                    print(f"Freq: {smoothed_freq:.1f}MHz | Temp: {temp:.1f}°C | Load: {usage:.1f}% | Power: {power_w:.1f}W ", end='\r')
+                
                 time.sleep(config["POLL_RATE"])
 
         except KeyboardInterrupt:
@@ -173,5 +189,3 @@ def run_utility():
 
 if __name__ == "__main__":
     run_utility()
-
-
