@@ -32,8 +32,8 @@ def load_config():
         try:
             with open(config_path, "r") as f:
                 user_config = json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"Warning: {config_path} is malformed ({e}). Using default settings.")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: Failed to read {config_path} ({e}). Using default settings.")
             user_config = {}
         
         # Validation: Ensure the JSON root is an object (dictionary)
@@ -72,8 +72,11 @@ def load_config():
             raise ValueError("VERBOSE must be a boolean (true or false).")
     else:
         # Generate the default configuration file if it doesn't exist
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=4)
+        try:
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=4)
+        except OSError as e:
+            print(f"Warning: Failed to create default {config_path} ({e}). Continuing with defaults.")
             
     return config
 
@@ -99,6 +102,8 @@ def run_utility():
     smoothed_freq = 0.0
 
     print("Monitoring CPU... (Press Ctrl+C to stop)")
+    
+    last_print_time = 0
     
     # Outer loop handles robust reconnection and self-healing
     while True:
@@ -134,10 +139,37 @@ def run_utility():
                 data_map = cpu_dict[cpu_name]
 
                 # Extraction
-                temp = data_map.get('Temperature', {}).get('Core (Tctl/Tdie)', 0)
-                if temp == 0:
-                     # Fallback if specific AMD/Intel core sensor name differs
-                     temp = data_map.get('Temperature', {}).get('CPU Package', 0)
+                temp_sensors = data_map.get('Temperature', {}) or {}
+                temp = 0.0
+
+                # Prefer well-known CPU temperature sensor names first
+                preferred_temp_names = ('Core (Tctl/Tdie)', 'CPU Package')
+                for name in preferred_temp_names:
+                    value = temp_sensors.get(name)
+                    if isinstance(value, (int, float)) and value > 0:
+                        temp = value
+                        break
+
+                # If still no temperature, fall back to a heuristic:
+                #   1) any non-zero sensor whose name contains "CPU"
+                #   2) otherwise the first non-zero temperature value
+                if temp == 0.0 and temp_sensors:
+                    cpu_like_values = [
+                        v for k, v in temp_sensors.items()
+                        if 'cpu' in k.lower() and isinstance(v, (int, float)) and v > 0
+                    ]
+                    generic_values = [
+                        v for v in temp_sensors.values()
+                        if isinstance(v, (int, float)) and v > 0
+                    ]
+                    if cpu_like_values:
+                        temp = cpu_like_values[0]
+                    elif generic_values:
+                        temp = generic_values[0]
+
+                # Treat a zero/absent temperature as "no data"
+                if temp == 0.0:
+                    temp = None
                      
                 usage = data_map.get('Load', {}).get('CPU Total', 0)
                 power_w = data_map.get('Power', {}).get('Package', 0)
@@ -155,7 +187,7 @@ def run_utility():
 
                 # --- Packet Construction ---
                 # 64-byte HID packet mapped via protocol sniffing
-                data = [0] * 64
+                data = bytearray(64)
                 data[0:7] = [16, 104, 1, 4, 13, 1, 2]
                 
                 data[7] = 0
@@ -164,8 +196,10 @@ def run_utility():
                 data[8], data[9] = p_bytes[0], p_bytes[1]
               
                 data[10] = 0
-                temp_bytes = struct.pack('>f', float(temp))
-                data[11:15] = list(temp_bytes)
+                if temp is not None:
+                    temp_bytes = struct.pack('>f', float(temp))
+                    data[11:15] = temp_bytes
+                # If temp is None, data[11:15] naturally remains 0 (the default initialized values)
 
                 data[15] = int(usage)
 
@@ -177,13 +211,19 @@ def run_utility():
                 data[19] = 22
 
                 try:
-                    device.write(data)
+                    # Write exact 64-byte sequence expected by HID API
+                    device.write(bytes(data))
                 except OSError:
-                    # Attempt zero-padded write on specific HID implementations
-                    device.write([0x00] + data)
+                    # Attempt 65-byte zero-padded write for strict HID implementations (report ID 0)
+                    device.write(bytes([0x00]) + bytes(data))
 
                 if config["VERBOSE"]:
-                    print(f"Freq: {smoothed_freq:.1f}MHz | Temp: {temp:.1f}°C | Load: {usage:.1f}% | Power: {power_w:.1f}W ", end='\r')
+                    current_time = time.time()
+                    # Rate-limit the console output to max 10 times a second to avoid spam at high polling
+                    if current_time - last_print_time >= 0.1:
+                        temp_str = f"{temp:.1f}°C" if temp is not None else "N/A"
+                        print(f"Freq: {smoothed_freq:.1f}MHz | Temp: {temp_str} | Load: {usage:.1f}% | Power: {power_w:.1f}W     ", end='\r')
+                        last_print_time = current_time
                 
                 time.sleep(config["POLL_RATE"])
 
@@ -200,5 +240,6 @@ def run_utility():
 
 if __name__ == "__main__":
     run_utility()
+
 
 
