@@ -29,24 +29,28 @@ def load_config():
     config_path = os.path.join(script_dir, "config.json")
     
     if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            user_config = json.load(f)
+        try:
+            with open(config_path, "r") as f:
+                user_config = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"Warning: {config_path} is malformed ({e}). Using default settings.")
+            user_config = {}
         
         # Validation: Ensure the JSON root is an object (dictionary)
         if not isinstance(user_config, dict):
-            raise ValueError("Configuration root must be a JSON object.")
+            print("Warning: Configuration root must be a JSON object. Using default settings.")
+            user_config = {}
         
-        # Fail fast on unknown configuration keys to surface typos/misconfigurations
+        # Log warning on unknown configuration keys to surface typos without failing
         unknown_keys = set(user_config.keys()) - set(DEFAULT_CONFIG.keys())
         if unknown_keys:
-            raise ValueError(
-                f"Unknown configuration key(s) in {config_path}: "
-                + ", ".join(sorted(unknown_keys))
-            )
+            print(f"Warning: Unknown configuration key(s) in {config_path} ignored: "
+                  + ", ".join(sorted(unknown_keys)))
             
-        # Merge defaults with user_config
+        # Merge defaults with user_config, ignoring unknown keys
         for k, v in user_config.items():
-            config[k] = v
+            if k in config:
+                config[k] = v
                 
         # Strict validation checks on the merged configuration
         if not (isinstance(config["VENDOR_ID"], int) and 0 <= config["VENDOR_ID"] <= 0xFFFF):
@@ -115,6 +119,12 @@ def run_utility():
 
             # 2. Inner loop handles polling and packet writing
             while True:
+                # Refresh hardware monitor data explicitly so readings aren't stale
+                if hasattr(computer, 'update'):
+                    computer.update()
+                elif hasattr(computer, 'Update'):
+                    computer.Update()
+
                 cpu_dict = computer.cpu           
                 if not cpu_dict:
                     time.sleep(config["POLL_RATE"])
@@ -149,7 +159,8 @@ def run_utility():
                 data[0:7] = [16, 104, 1, 4, 13, 1, 2]
                 
                 data[7] = 0
-                p_bytes = int(power_w).to_bytes(2, 'little')
+                # Aligned power_w to 'big' endian to match frequency and temperature structure
+                p_bytes = int(power_w).to_bytes(2, 'big')
                 data[8], data[9] = p_bytes[0], p_bytes[1]
               
                 data[10] = 0
@@ -189,3 +200,5 @@ def run_utility():
 
 if __name__ == "__main__":
     run_utility()
+
+
